@@ -11,7 +11,7 @@ import warnings
 from datetime import datetime, timezone
 from enum import StrEnum, IntEnum
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Callable, Literal, Type
 
 from discord_webhook import DiscordWebhook, DiscordEmbed
 from dotenv import load_dotenv
@@ -412,8 +412,11 @@ class DiscordLogger:
         return log_record
 
 
-class _LoggerManager:
+class LoggerManager:
     _instance = None
+
+    _registry: dict[str, Type[DiscordLogger]]
+    _factory: Type[DiscordLogger]
 
     def __new__(cls):
         if cls._instance is None:
@@ -431,50 +434,25 @@ class _LoggerManager:
         manager instanced in this module.
         Implemented as a singleton class.
         """
+        pass
 
-        self._registry = {}
-        self._factory = DiscordLogger
-
-    def get_logger(self, name: str,
-                   *,
-                   webhook_url: str | None = None,
-                   embed_process_name: bool = False,
-                   embed_thread_name: bool = False,
-                   embed_line_number: bool = False,
-                   embed_func_name: bool = False,
-                   embed_module_name: bool = False,
-                   embed_all: bool = False,
-                   payload_type: PayloadType = PayloadType.EMBEDDED) -> DiscordLogger:
+    def get_logger(self, name: str, **kwargs) -> DiscordLogger:
         """ Returns a logger with the given name. If there is none registered, a new one is created with the passed
         keyword arguments.
 
         :param name:
-        :param webhook_url:
-        :param embed_process_name:
-        :param embed_thread_name:
-        :param embed_line_number:
-        :param embed_func_name:
-        :param embed_module_name:
-        :param embed_all:
-        :param payload_type:
+        :param kwargs: Keyword arguments to pass to the DiscordLogger instance
         :return:
         """
+        if not isinstance(name, str):
+            raise TypeError(f"name must be a string. Got {type(name)}")
         if name not in self._registry:
-            self._registry[name] = self._factory(name,
-                                                 webhook_url=webhook_url,
-                                                 embed_process_name=embed_process_name,
-                                                 embed_thread_name=embed_thread_name,
-                                                 embed_line_number=embed_line_number,
-                                                 embed_func_name=embed_func_name,
-                                                 embed_module_name=embed_module_name,
-                                                 embed_all=embed_all,
-                                                 payload_type=payload_type
-                                                 )
+            self._registry[name] = self._factory(name, **kwargs)
         return self._registry[name]
 
 
 if _manager is _sentinel:
-    _manager = _LoggerManager()
+    _manager = LoggerManager()
 
 
 def get_logger(name: str,
