@@ -413,12 +413,23 @@ class DiscordLogger:
 
 
 class _LoggerManager:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._registry = {}
+            cls._instance._factory = DiscordLogger
+
+        return cls._instance
+
     def __init__(self):
         """Very basic class that acts as a registry and manager for logger objects. Very roughly based on the
         Python logging module.
 
         This class should not be used directly and, in normal circumstances, there should be only one
         manager instanced in this module.
+        Implemented as a singleton class.
         """
 
         self._registry = {}
@@ -426,6 +437,7 @@ class _LoggerManager:
 
     def get_logger(self, name: str,
                    *,
+                   webhook_url: str | None = None,
                    embed_process_name: bool = False,
                    embed_thread_name: bool = False,
                    embed_line_number: bool = False,
@@ -437,6 +449,7 @@ class _LoggerManager:
         keyword arguments.
 
         :param name:
+        :param webhook_url:
         :param embed_process_name:
         :param embed_thread_name:
         :param embed_line_number:
@@ -448,6 +461,7 @@ class _LoggerManager:
         """
         if name not in self._registry:
             self._registry[name] = self._factory(name,
+                                                 webhook_url=webhook_url,
                                                  embed_process_name=embed_process_name,
                                                  embed_thread_name=embed_thread_name,
                                                  embed_line_number=embed_line_number,
@@ -464,6 +478,8 @@ if _manager is _sentinel:
 
 
 def get_logger(name: str,
+               *,
+               webhook_url: str | None = None,
                embed_process_name: bool = False,
                embed_thread_name: bool = False,
                embed_line_number: bool = False,
@@ -474,6 +490,7 @@ def get_logger(name: str,
     """Factory method for creating a DiscordLogger object. See the DiscordLogger class for more information.
 
     :param name: Logger name (usually the application name or just __name__)
+    :param webhook_url: Discord webhook URL
     :param embed_process_name: Add caller process name to the logs (default: False)
     :param embed_thread_name: Add caller thread name to the logs (default: False)
     :param embed_line_number: Add caller line number to the logs (default: False)
@@ -486,6 +503,7 @@ def get_logger(name: str,
     if isinstance(payload_type, str):
         payload_type = PayloadType[payload_type]
     return _manager.get_logger(name,
+                               webhook_url=webhook_url,
                                embed_process_name=embed_process_name,
                                embed_thread_name=embed_thread_name,
                                embed_line_number=embed_line_number,
