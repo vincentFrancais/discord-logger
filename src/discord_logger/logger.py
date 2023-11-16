@@ -478,8 +478,8 @@ def get_logger(name: str,
     :param payload_type: Payload message type, either EMBEDDED or MESSAGE (default: EMBEDDED)
     :return:The logged DiscordLogger object
     """
-    if isinstance(payload_type, str):
-        payload_type = PayloadType[payload_type]
+    if not isinstance(name, str):
+        raise TypeError(f"name must be a string. Got {type(name)}")
     return _manager.get_logger(name,
                                webhook_url=webhook_url,
                                embed_process_name=embed_process_name,
