@@ -47,11 +47,6 @@ class TestDiscordLogger:
         assert fields['func_name'] == caller_func
         assert fields['line_number'] == caller_lineno
 
-    #  DiscordLogger raises an error if an unknown payload type is set
-    def test_unknown_payload_type(self):
-        with pytest.raises(ValueError):
-            logger = DiscordLogger("MyApp", webhook_url="https://discord.com/webhook", payload_type=2)
-
     #  DiscordLogger raises an error if the webhook URL is not provided and cannot be found in the environment
     def test_missing_webhook_url(self):
         with pytest.raises(EnvironmentError):

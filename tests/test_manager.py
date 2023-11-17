@@ -7,7 +7,7 @@ import pytest
 from discord_logger.logger import LoggerManager, DiscordLogger
 
 
-@pytest.mark.usefixtures("dummy_webhook_url")
+@pytest.mark.usefixtures("dummy_webhook_url", "reinit_manager")
 class TestLoggerManager:
 
     #  Can get a logger with a given name

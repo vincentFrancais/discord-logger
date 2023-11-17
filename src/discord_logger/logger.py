@@ -1,17 +1,19 @@
 """Discord logger module.
 """
-
+import sys
 import os
 import dataclasses
 import functools
 import inspect
 import multiprocessing
+import signal
 import threading
 import warnings
 from datetime import datetime, timezone
 from enum import StrEnum, IntEnum
 from dataclasses import dataclass
-from typing import Callable, Literal, Type
+from queue import Queue, Empty
+from typing import Callable, Literal, Type, Sequence
 
 from discord_webhook import DiscordWebhook, DiscordEmbed
 from dotenv import load_dotenv
@@ -24,6 +26,11 @@ _sentinel = object()
 _manager = _sentinel
 
 _package_name = "Discord-Logger"
+
+if sys.platform == "win32":
+    _sig_to_handle = [signal.SIGINT]
+else:
+    _sig_to_handle = [signal.SIGINT, signal.SIGHUP]
 
 
 def _get_webhook_url() -> str:
@@ -55,11 +62,6 @@ class LevelColor(StrEnum):
     CRITICAL = "C90913"
 
 
-class PayloadType(IntEnum):
-    MESSAGE = 0
-    EMBEDDED = 1
-
-
 _optional_keys = ['thread_name', 'process_name', 'func_name', 'module_name', 'line_number']
 
 
@@ -80,6 +82,12 @@ class LogRecord:
 
     def get_fields(self) -> dict[str, str | int]:
         return {k: v for k, v in dataclasses.asdict(self).items() if v is not None}
+
+
+@dataclass
+class LogPayload:
+    payload: LogRecord
+    url: str | Sequence[str]
 
 
 _embedded_key_to_name = {
@@ -108,19 +116,19 @@ def format_payload_embedded(log_record: LogRecord) -> DiscordEmbed:
     return e
 
 
-def format_payload_message(log_record: LogRecord, message_fmt: str) -> str:
-    """Format the message formatted string using the fields in the log record
-
-    :param log_record: Payload log record
-    :param message_fmt: Message formatted string
-    :return: Formatted message
-    """
-    fields = log_record.get_fields()
-    ts = datetime.strftime(log_record.timestamp, '%Y-%m-%d %H:%M:%S')
-    fields['timestamp'] = ts
-    fields['level'] = log_record.level.name
-    message = message_fmt.format(**fields)
-    return message
+# def format_payload_message(log_record: LogRecord, message_fmt: str) -> str:
+#     """Format the message formatted string using the fields in the log record
+#
+#     :param log_record: Payload log record
+#     :param message_fmt: Message formatted string
+#     :return: Formatted message
+#     """
+#     fields = log_record.get_fields()
+#     ts = datetime.strftime(log_record.timestamp, '%Y-%m-%d %H:%M:%S')
+#     fields['timestamp'] = ts
+#     fields['level'] = log_record.level.name
+#     message = message_fmt.format(**fields)
+#     return message
 
 
 def _find_caller() -> tuple[str, int, str]:
@@ -161,6 +169,51 @@ def _parse_level(level: int | str | LogLevel) -> LogLevel:
         return LogLevel[level]
 
 
+class _Dispatcher(threading.Thread):
+    def __init__(self):
+        super().__init__(name="DiscordLoggerDispatcher")
+
+        # Handle signals
+        for s in _sig_to_handle:
+            signal.signal(s, self._sig_handler)
+
+        # self._webhooks = [DiscordWebhook(url=u) for u in self._urls]
+
+        self._queue: Queue[LogPayload] = Queue()
+        self._stop_event = threading.Event()
+
+    def run(self):
+        while not self._stop_event.is_set():
+            try:
+                payload = self._queue.get(block=True, timeout=1)
+                self._dispatch(payload)
+            except Empty:
+                pass
+
+        self._stop()
+
+    def _sig_handler(self, _, __):
+        self._stop_event.set()
+        self._stop()
+
+    @staticmethod
+    def _dispatch(payload: LogPayload):
+        webhooks = [DiscordWebhook(url=u) for u in payload.url]
+        e = format_payload_embedded(payload.payload)
+        for webhook in webhooks:
+            webhook.add_embed(e)
+
+        for webhook in webhooks:
+            webhook.execute(remove_embeds=True)
+
+    def _stop(self):
+        if not self._queue.empty():
+            warnings.warn("Dispatcher queue not empty")
+
+    def stop(self):
+        self._stop_event.set()
+
+
 class DiscordLogger:
     _level: LogLevel
     _webhook: DiscordWebhook
@@ -177,7 +230,6 @@ class DiscordLogger:
                  embed_func_name: bool = False,
                  embed_module_name: bool = False,
                  embed_all: bool = False,
-                 payload_type: PayloadType = PayloadType.EMBEDDED,
                  **discord_webhook_kwargs
                  ):
         """Logger class that send logged messages to Discord through webhook.
@@ -223,8 +275,6 @@ class DiscordLogger:
         self._app_name = name
         self._webhook = DiscordWebhook(url=webhook_url, **discord_webhook_kwargs)
 
-        self._payload_type = payload_type
-
         if embed_all:
             self._optional_fields = {k: True for k in _optional_keys}
         else:
@@ -237,41 +287,10 @@ class DiscordLogger:
             }
 
         self._set_log_level(level)
-        self._set_message_fmt()
-        self._set_dispatcher()
-
-    def _dispatch_message(self, log_record: LogRecord):
-        message = format_payload_message(log_record, self._message_fmt)
-        self._webhook.content = message
 
     def _dispatch_embed(self, log_record: LogRecord):
         embed = format_payload_embedded(log_record)
         self._webhook.add_embed(embed)
-
-    def _set_message_fmt(self):
-        # Format: timestamp | level | app_name
-        # [| process_name | thread_name | func_name | module_name:line_number]
-        # | message
-        self._message_fmt = "{timestamp}::**{level}**::{app_name}"
-        for k in _optional_keys:
-            if k == "line_number":
-                continue
-            if self._optional_fields[k]:
-                self._message_fmt += "::{" + k + "}"
-        if self._optional_fields['line_number']:
-            # self._message_fmt = self._message_fmt[:-1]
-            self._message_fmt += ":{line_number}"
-
-        self._message_fmt += ":: {message}"
-
-    def _set_dispatcher(self):
-        match self._payload_type:
-            case PayloadType.EMBEDDED:
-                self._dispatcher = self._dispatch_embed
-            case PayloadType.MESSAGE:
-                self._dispatcher = self._dispatch_message
-            case _:
-                raise ValueError(f"Unknown payload type: {self._payload_type}")
 
     def _set_log_level(self, level: LogLevel | int | str):
         if isinstance(level, LogLevel):
@@ -280,15 +299,6 @@ class DiscordLogger:
             self._level = LogLevel(level)
         else:
             self._level = LogLevel[level]
-
-    @property
-    def payload_type(self) -> PayloadType:
-        return self._payload_type
-
-    @payload_type.setter
-    def payload_type(self, value: PayloadType):
-        self._payload_type = value
-        self._set_dispatcher()
 
     @property
     def level(self) -> LogLevel:
@@ -338,9 +348,6 @@ class DiscordLogger:
     def embed_process_name(self, value: bool):
         self._optional_fields['process_name'] = value
 
-    def dispatch_message(self, log_record: LogRecord):
-        pass
-
     def log(self, level: int | str | LogLevel, message: str) -> None:
         """Send a message to the Discord channel. The level acts as a filter by comparing it to the object log level.
 
@@ -364,7 +371,7 @@ class DiscordLogger:
             func_name=fields.get("func_name", None),
             module_name=fields.get("module_name", None),
         )
-        self._dispatcher(log_record)
+        self._dispatch_embed(log_record)
         response = self._webhook.execute(remove_embeds=True)
         if response.status_code != 200:
             warnings.warn(f"Failed to send log. Status code: {response.status_code}")
@@ -437,7 +444,7 @@ class LoggerManager:
 
         Implemented as a singleton class (should be thread-safe).
         """
-        pass
+        dispatcher = _Dispatcher()
 
     def get_logger(self, name: str, **kwargs) -> DiscordLogger:
         """ Returns a logger with the given name. If there is none registered, a new one is created with the passed
@@ -465,8 +472,7 @@ def get_logger(name: str,
                embed_line_number: bool = False,
                embed_func_name: bool = False,
                embed_module_name: bool = False,
-               embed_all: bool = False,
-               payload_type: PayloadType | Literal["EMBEDDED", "MESSAGE"] = PayloadType.EMBEDDED) -> DiscordLogger:
+               embed_all: bool = False) -> DiscordLogger:
     """Factory method for creating a DiscordLogger object. If a logger with the given name already exists, returns
     the existing logger.
     It allows customization of the logger's settings
@@ -486,7 +492,6 @@ def get_logger(name: str,
     :param embed_func_name:  Add caller function name to the logs (default: False)
     :param embed_module_name: Add caller module name to the logs (default: False)
     :param embed_all: Add all caller information
-    :param payload_type: Payload message type, either EMBEDDED or MESSAGE (default: EMBEDDED)
     :raise TypeError: If name is not a string
     :raise TypeError: If payload_type is not an instance of PayloadType enum or a string
     :raise ValueError: If payload_type is a string and not 'EMBEDDED' nor 'MESSAGE'
@@ -496,12 +501,6 @@ def get_logger(name: str,
     if not isinstance(name, str):
         raise TypeError(f"name must be a string. Got {type(name)}")
 
-    if not isinstance(payload_type, PayloadType) and not isinstance(payload_type, str):
-        raise TypeError(f"payload_type must be an instance of PayloadType enum or a string. Got {type(payload_type)}")
-
-    if isinstance(payload_type, str) and payload_type not in ["EMBEDDED", "MESSAGE"]:
-        raise ValueError(f"payload_type must be either 'EMBEDDED' or 'MESSAGE'. Got {payload_type}")
-
     return manager.get_logger(name,
                               webhook_url=webhook_url,
                               embed_process_name=embed_process_name,
@@ -509,5 +508,4 @@ def get_logger(name: str,
                               embed_line_number=embed_line_number,
                               embed_func_name=embed_func_name,
                               embed_module_name=embed_module_name,
-                              embed_all=embed_all,
-                              payload_type=payload_type)
+                              embed_all=embed_all,)
