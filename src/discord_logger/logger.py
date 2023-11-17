@@ -414,15 +414,17 @@ class DiscordLogger:
 
 class LoggerManager:
     _instance = None
+    _lock: threading.Lock = threading.Lock()
 
     _registry: dict[str, Type[DiscordLogger]]
     _factory: Type[DiscordLogger]
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._registry = {}
-            cls._instance._factory = DiscordLogger
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._registry = {}
+                cls._instance._factory = DiscordLogger
 
         return cls._instance
 
@@ -431,8 +433,9 @@ class LoggerManager:
         Python logging module.
 
         This class should not be used directly and, in normal circumstances, there should be only one
-        manager instanced in this module.
-        Implemented as a singleton class.
+        manager instanced in a process.
+
+        Implemented as a singleton class (should be thread-safe).
         """
         pass
 
@@ -451,8 +454,7 @@ class LoggerManager:
         return self._registry[name]
 
 
-if _manager is _sentinel:
-    _manager = LoggerManager()
+manager = LoggerManager()
 
 
 def get_logger(name: str,
@@ -465,7 +467,16 @@ def get_logger(name: str,
                embed_module_name: bool = False,
                embed_all: bool = False,
                payload_type: PayloadType | Literal["EMBEDDED", "MESSAGE"] = PayloadType.EMBEDDED) -> DiscordLogger:
-    """Factory method for creating a DiscordLogger object. See the DiscordLogger class for more information.
+    """Factory method for creating a DiscordLogger object. If a logger with the given name already exists, returns
+    the existing logger.
+    It allows customization of the logger's settings
+    such as the webhook URL, embedding of caller information, and the payload message type.
+
+    Example usage:
+    .. code-block:: python
+        logger = get_logger("AwesomeApp", webhook_url="https://discord.com/my/wehbhook", embed_process_name=True)
+        logger.level = logging.DEBUG
+        logger.info("Hello World!")
 
     :param name: Logger name (usually the application name or just __name__)
     :param webhook_url: Discord webhook URL
@@ -476,16 +487,27 @@ def get_logger(name: str,
     :param embed_module_name: Add caller module name to the logs (default: False)
     :param embed_all: Add all caller information
     :param payload_type: Payload message type, either EMBEDDED or MESSAGE (default: EMBEDDED)
-    :return:The logged DiscordLogger object
+    :raise TypeError: If name is not a string
+    :raise TypeError: If payload_type is not an instance of PayloadType enum or a string
+    :raise ValueError: If payload_type is a string and not 'EMBEDDED' nor 'MESSAGE'
+    :return: The logged `DiscordLogger` object
     """
+
     if not isinstance(name, str):
         raise TypeError(f"name must be a string. Got {type(name)}")
-    return _manager.get_logger(name,
-                               webhook_url=webhook_url,
-                               embed_process_name=embed_process_name,
-                               embed_thread_name=embed_thread_name,
-                               embed_line_number=embed_line_number,
-                               embed_func_name=embed_func_name,
-                               embed_module_name=embed_module_name,
-                               embed_all=embed_all,
-                               payload_type=payload_type)
+
+    if not isinstance(payload_type, PayloadType) and not isinstance(payload_type, str):
+        raise TypeError(f"payload_type must be an instance of PayloadType enum or a string. Got {type(payload_type)}")
+
+    if isinstance(payload_type, str) and payload_type not in ["EMBEDDED", "MESSAGE"]:
+        raise ValueError(f"payload_type must be either 'EMBEDDED' or 'MESSAGE'. Got {payload_type}")
+
+    return manager.get_logger(name,
+                              webhook_url=webhook_url,
+                              embed_process_name=embed_process_name,
+                              embed_thread_name=embed_thread_name,
+                              embed_line_number=embed_line_number,
+                              embed_func_name=embed_func_name,
+                              embed_module_name=embed_module_name,
+                              embed_all=embed_all,
+                              payload_type=payload_type)
