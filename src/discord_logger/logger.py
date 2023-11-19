@@ -100,10 +100,21 @@ _embedded_key_to_name = {
 
 
 def format_payload_embedded(log_record: LogRecord) -> DiscordEmbed:
-    """Generate a Discord embed that acts as payload for the webhook.
+    """
+    :param log_record: The log record object containing information about the log message.
+    :return: The formatted Discord embed object containing the log message.
 
-    :param log_record:
-    :return:
+    This method takes a log_record object and formats it into a Discord embed object.
+    It sets the title of the embed as the log level, the description as the log message,
+    and the author as the application name.
+    It also sets the footer text as the package name and version. The embed color is determined based on the log level.
+    The timestamp is set using the log record's timestamp in UTC timezone.
+
+    Example usage:
+    ```python
+    log_record = LogRecord(...)
+    embed = format_payload_embedded(log_record)
+    ```
     """
     level_color = LevelColor[log_record.level.name]
     e = DiscordEmbed(title=f"`{log_record.level.name}`", description=log_record.message)
@@ -114,21 +125,6 @@ def format_payload_embedded(log_record: LogRecord) -> DiscordEmbed:
     for field_name, field_value in log_record.get_optional_fields().items():
         e.add_embed_field(name=_embedded_key_to_name[field_name], value=field_value)
     return e
-
-
-# def format_payload_message(log_record: LogRecord, message_fmt: str) -> str:
-#     """Format the message formatted string using the fields in the log record
-#
-#     :param log_record: Payload log record
-#     :param message_fmt: Message formatted string
-#     :return: Formatted message
-#     """
-#     fields = log_record.get_fields()
-#     ts = datetime.strftime(log_record.timestamp, '%Y-%m-%d %H:%M:%S')
-#     fields['timestamp'] = ts
-#     fields['level'] = log_record.level.name
-#     message = message_fmt.format(**fields)
-#     return message
 
 
 def _find_caller() -> tuple[str, int, str]:
@@ -171,13 +167,14 @@ def _parse_level(level: int | str | LogLevel) -> LogLevel:
 
 class _Dispatcher(threading.Thread):
     def __init__(self):
-        super().__init__(name="DiscordLoggerDispatcher")
+        """ Basic (daemon) threaded class that dispatches logged messages to the registered URL.
+        This class should not be used directly and only a single instance should be created in this module.
+        """
+        super().__init__(name="DiscordLoggerDispatcher", daemon=True)
 
         # Handle signals
         for s in _sig_to_handle:
             signal.signal(s, self._sig_handler)
-
-        # self._webhooks = [DiscordWebhook(url=u) for u in self._urls]
 
         self._queue: Queue[LogPayload] = Queue()
         self._stop_event = threading.Event()
@@ -198,13 +195,20 @@ class _Dispatcher(threading.Thread):
 
     @staticmethod
     def _dispatch(payload: LogPayload):
+        """ Dispatch the payload to the registered webhook.
+
+        :param payload: Payload to dispatch
+        :return:
+        """
         webhooks = [DiscordWebhook(url=u) for u in payload.url]
         e = format_payload_embedded(payload.payload)
         for webhook in webhooks:
             webhook.add_embed(e)
 
         for webhook in webhooks:
-            webhook.execute(remove_embeds=True)
+            response = webhook.execute(remove_embeds=True)
+            if response.status_code != 200:
+                warnings.warn(f"Failed to log message to {webhook.url}, status code: {response.status_code}")
 
     def _stop(self):
         if not self._queue.empty():
